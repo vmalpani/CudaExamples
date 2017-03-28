@@ -13,16 +13,26 @@
 
 using namespace std;
 
-// Create a kernel to estimate pi
-__global__ void pi(float* x, float* y, int* global_count) {
-    __shared__ int counts[1000];
+static const int nsamples = 1e8;
+static const int nthreads = 500;
+static const int nitemsperthread = 1000;
+static const int nblocks = nsamples / (nthreads * 1000);
 
-    int globalId = blockIdx.x * blockDim.x + 1000 * threadIdx.x;
+
+// Create a kernel to estimate pi
+__global__ void pi_optimized(float* x, float* y, int* global_count) {
+    __shared__ int counts[nthreads];
+
+    //int globalId = blockIdx.x * blockDim.x + nitemsperthread * threadIdx.x;
+    int globalId = blockIdx.x * blockDim.x + threadIdx.x;
 
     int thread_count=0;
-    for (int i=0; i<1000; i++) {
-        if (x[globalId+i]*x[globalId+i] + y[globalId+i]*y[globalId+i] < 1.0) {
-            thread_count++;
+    for (int i=0; i<nitemsperthread; i++) {
+        int idx = globalId+(i*nthreads*nblocks);
+        if (idx < nsamples) {
+            if (x[idx]*x[idx] + y[idx]*y[idx] < 1.0) {
+                thread_count++;
+            }
         }
     }
 
@@ -31,16 +41,40 @@ __global__ void pi(float* x, float* y, int* global_count) {
 
     if (threadIdx.x == 0) {
         int block_count = 0;
-        for (int i=0; i<1000; i++) {
+        for (int i=0; i<nthreads; i++) {
             block_count += counts[i];
         }
         global_count[blockIdx.x] = block_count;
     }
 }
 
-int nsamples = 1e8;
-int nthreads = 1e3;
-int nblocks = nsamples / (nthreads * 1000);
+
+// Create a kernel to estimate pi
+__global__ void pi_random(float* x, float* y, int* global_count) {
+    __shared__ int counts[nthreads];
+
+    int globalId = blockIdx.x * blockDim.x + nitemsperthread * threadIdx.x;
+
+    int thread_count=0;
+    for (int i=0; i<nitemsperthread; i++) {
+        if (globalId+i < nsamples) {
+            if (x[globalId+i]*x[globalId+i] + y[globalId+i]*y[globalId+i] < 1.0) {
+                thread_count++;
+            }
+        }
+    }
+
+    counts[threadIdx.x] = thread_count; 
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        int block_count = 0;
+        for (int i=0; i<nthreads; i++) {
+            block_count += counts[i];
+        }
+        global_count[blockIdx.x] = block_count;
+    }
+}
 
 int main(void)
 {
@@ -76,11 +110,12 @@ int main(void)
     cudaEvent_t start, stop;
     float time;
 
+    // Time pi consecutive access
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
     cudaEventRecord(start, 0);
-    pi <<< nblocks, nthreads >>> (d_randNumsX, d_randNumsY, global_counter);
+    pi_optimized <<< nblocks, nthreads >>> (d_randNumsX, d_randNumsY, global_counter);
     cudaEventRecord(stop, 0);
 
     cudaEventSynchronize(stop);
@@ -99,6 +134,7 @@ int main(void)
     // fraction that fell within (quarter) of unit circle
     float estimatedValue = 4.0 * float(nsamples_in_circle) / nsamples;
 
+    cout << "Optimized Pi" << endl;
     cout << "Estimated Value: " << estimatedValue << endl;
     cout << "Estimated Time: " << time << endl;
 
